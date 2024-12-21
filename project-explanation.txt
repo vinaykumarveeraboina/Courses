@@ -1,0 +1,1462 @@
+Running the pipeline 
+
+
+
+//This jenkins file is for eureka deploy
+pipeline{
+    agent{
+        label 'k8s-slave'
+    }
+    options { 
+      // Discard old builds
+      
+      buildDiscarder(logRotator(daysToKeepStr: '7', numToKeepStr: '5'))
+      
+      }
+    environment{
+        DOCKERHUB = "docker.io/vinaykumarveeraboina"
+        APPLICATION_NAME = 'eureka'
+        POM_VERSION  = readMavenPom().getVersion()
+        POM_PACKAGING = readMavenPom().getPackaging()
+        DOCKER_CREDS = credentials('DokcerHub')
+        SONAR_URL = 'http://34.45.232.31:9000'
+        
+        SONAR_TOKEN = credentials('sonar-secret')
+    }
+    tools{
+        maven 'maven-3.8.8'
+        jdk  'Jdk17'
+    }
+  stages {
+    //application build happens here
+    stage ('Build')
+     {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " building the ${env.APPLICATION_NAME} application"
+        sh "mvn clean package -D skipTests=true"
+
+       }
+      } 
+    stage ('Unit-Test')
+    {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " Tesitng the ${env.APPLICATION_NAME} application"
+        sh "mvn test"
+        }
+        post{
+          always{
+            junit 'target/surefire-reports/*.xml'
+          }
+        }
+    }
+     stage ('Sonar _Test')
+      {
+      
+          steps {
+              echo " *************************      STARTING SONAR ANALYSIS with Quality gate     ************************ "
+              withSonarQubeEnv('SonarQube') 
+              {
+                sh """
+                mvn clean verify sonar:sonar \
+                 -Dsonar.projectKey=i127-eureka \
+                 -Dsonar.host.url=${env.SONAR_URL} \
+                 -Dsonar.login=${SONAR_TOKEN}
+                """
+              }
+          
+          
+              timeout(time: 2, unit: 'MINUTES') {
+                waitForQualityGate abortPipeline: true
+              }
+     }
+      }
+    stage ('Docker-Format')
+     {
+      steps{
+
+        //  how to read the pom.xml 
+        echo "ACTUAL_FORMAT : ${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING}"
+
+        //need to have below formating way 
+        //eureka-buildnumber-branchname.packaging
+        echo "CUSTOM_FORMAT : ${APPLICATION_NAME}-${currentBuild.number}-${BRANCH_NAME}.${POM_PACKAGING}"
+      }
+     } 
+    stage ('Docker Build and Push ')
+    {
+      steps{
+        sh """
+            ls -la
+            
+             cp ${workspace}/target/i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} ./.cicd
+             ls -la ./.cicd
+             echo "***********************  Building Docker Image  *********************************"
+             
+             
+            docker build --force-rm --no-cache --pull --rm=true --build-arg JAR_SOURCE=i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} -t ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT} ./.cicd 
+             docker images 
+             echo " *****************   Docker login ************************ "
+              docker login -u ${DOCKER_CREDS_USR} -p ${DOCKER_CREDS_PSW}
+             echo " ********************* Docker push ************************************* "
+              docker push ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+        """
+        // /home/ansible/jenkins/workspace/i27-eureka_master/target/i27-eureka-0.0.1-SNAPSHOT.jar
+      }
+    }
+  
+  
+  } 
+  } 
+ 
+
+
+
+
+
+
+Sonar got failed and now jenkins also skipped other stages 
+
+
+
+
+
+
+
+
+
+Removed unused code and tesitng 
+
+
+
+
+
+
+Pipeline is sucessfull 
+
+
+
+
+
+
+
+
+
+
+
+Now installing docker on docker server and should be able to perform docker run 
+
+
+
+---
+- name: Install Docker on Debian
+  hosts: docker
+  become: yes
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+    - name: Install required packages
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - apt-transport-https
+        - ca-certificates
+        - curl
+        - gnupg-agent
+        - software-properties-common
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/debian/gpg
+        state: present
+    - name: Get Debian codename
+      command: lsb_release -cs
+      register: lsb_release
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/debian {{ lsb_release.stdout }} stable"
+        state: present
+    - name: Update apt cache after adding Docker repo
+      apt:
+        update_cache: yes
+    - name: Install Docker CE
+      apt:
+        name: docker-ce
+        state: latest
+    - name: Install Docker CLI and containerd
+      apt:
+        name: "{{ item }}"
+        state: latest
+      loop:
+        - docker-ce-cli
+        - containerd.io
+    - name: Start and enable Docker service
+      service:
+        name: docker
+        state: started
+        enabled: yes
+    - name: Create docker group if it does not exist
+      group:
+        name: docker
+        state: present
+    - name: Add ansible user to docker group
+      user:
+        name: ansible
+        groups: docker
+        append: yes
+
+
+
+
+Installed , now creating a pipeline to deploy to the dev  server 
+
+
+
+
+
+
+
+
+
+
+
+Creating the credentials of the docker server 
+
+
+
+
+
+
+  //with the help of this block the slave will be connecting the docker vm ,and execute the command to create the containers
+
+
+
+withCredentials([usernamePassword(credentialsId: 'DockerHost', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]) {
+    // some block
+
+
+We need ssh pass package on docker host  and jenkins slave 
+sudo apt install sshpass
+
+
+
+
+We can pass the host-ip in pipeline block , stage , in jenkins
+
+
+
+
+
+ 
+
+ sh " sshpass -p ${PASSWORD}-v ssh-o StrictHostKeyChecking=no ${USERNAME}@${docker-dev-server} hostname -i"
+             
+               
+
+     ssh-o StrictHostKeyChecking=no   ---to skip host verification 
+
+
+
+
+
+Now we should pull the image back to docker dev server and docker run command 
+
+
+
+	• Docker login 
+	• Docker pull
+	• Docker run 
+	
+
+
+
+
+
+sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} 
+docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+
+
+It will connect to docker host and perform the docker pull command 
+
+
+
+
+
+Image is build and same image is copied to docker dev server 
+
+
+
+
+
+
+
+/* @Library ("com.i27academy.slb@master") _
+jfrogPipeline(
+    appName: 'eureka'
+) */
+//This jenkins file is for eureka deploy
+pipeline{
+    agent{
+        label 'k8s-slave'
+    }
+    options { 
+      // Discard old builds
+      
+      buildDiscarder(logRotator(daysToKeepStr: '7', numToKeepStr: '5'))
+      
+      }
+    environment{
+        DOCKERHUB = "docker.io/vinaykumarveeraboina"
+        APPLICATION_NAME = 'eureka'
+        POM_VERSION  = readMavenPom().getVersion()
+        POM_PACKAGING = readMavenPom().getPackaging()
+        DOCKER_CREDS = credentials('DokcerHub')
+        SONAR_URL = 'http://34.122.118.251:9000'
+        
+        SONAR_TOKEN = credentials('sonar-secret')
+    }
+    tools{
+        maven 'maven-3.8.8'
+        jdk  'Jdk17'
+    }
+  stages {
+    //application build happens here
+    stage ('Build')
+     {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " building the ${env.APPLICATION_NAME} application"
+        sh "mvn clean package -D skipTests=true"
+
+       }
+      } 
+    stage ('Unit-Test')
+    {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " Tesitng the ${env.APPLICATION_NAME} application"
+        sh "mvn test"
+        }
+        post{
+          always{
+            junit 'target/surefire-reports/*.xml'
+          }
+        }
+    }
+     stage ('Sonar _Test')
+      {
+      
+          steps {
+              echo " *************************      STARTING SONAR ANALYSIS with Quality gate     ************************ "
+              withSonarQubeEnv('SonarQube') 
+              {
+                sh """
+                mvn clean verify sonar:sonar \
+                 -Dsonar.projectKey=i127-eureka \
+                 -Dsonar.host.url=${env.SONAR_URL} \
+                 -Dsonar.login=${SONAR_TOKEN}
+                """
+              }
+          
+          
+              timeout(time: 5, unit: 'MINUTES') {
+                waitForQualityGate abortPipeline: true
+              }
+     }
+      }
+    stage ('Docker-Format')
+     {
+      steps{
+
+        //  how to read the pom.xml 
+        echo "ACTUAL_FORMAT : ${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING}"
+
+        //need to have below formating way 
+        //eureka-buildnumber-branchname.packaging
+        echo "CUSTOM_FORMAT : ${APPLICATION_NAME}-${currentBuild.number}-${BRANCH_NAME}.${POM_PACKAGING}"
+      }
+     } 
+    stage ('Docker Build and Push ')
+    {
+      steps{
+        sh """
+            ls -la
+            
+             cp ${workspace}/target/i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} ./.cicd
+             ls -la ./.cicd
+             echo "***********************  Building Docker Image  *********************************"
+             
+             
+            docker build --force-rm --no-cache --pull --rm=true --build-arg JAR_SOURCE=i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} -t ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT} ./.cicd 
+             docker images 
+             echo " *****************   Docker login ************************ "
+              docker login -u ${DOCKER_CREDS_USR} -p ${DOCKER_CREDS_PSW}
+             echo " ********************* Docker push ************************************* "
+              docker push ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+        """
+        // /home/ansible/jenkins/workspace/i27-eureka_master/target/i27-eureka-0.0.1-SNAPSHOT.jar
+      }
+    }
+    stage ("Docker deploy")
+    {
+     steps{
+        echo "************************  Deplpoying to Docker Dev  ********************************"
+
+        withCredentials([usernamePassword(credentialsId: 'DockerHost', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]){
+        
+         
+        // some block
+         //with the help of this block the slave will be connecting the docker vm ,and execute the command to create the containers
+         // sshpass -p -v ssh-o StrictHostKeyChecking=no username@ipaddess command 
+            // sh "sshpass -p ${PASSWORD}-v ssh-o StrictHostKeyChecking=no ${USERNAME}@${docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT} "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+        }
+     }
+    }
+  
+  
+  } 
+  } 
+ 
+
+
+
+
+Now docker run command 
+
+
+
+Docker run -d -P  --name docker-dev imagename  --it will take port number automatically , 
+
+
+--name docker-dev is the name of the container
+
+
+
+
+Eureka container running on 8761
+
+Now we want to configure in such a way that , we should be able to run the run the contaners in different host port for each env 
+
+Dev-5761
+test - 6761
+Stage -7761
+
+-p hostport:containerport   ---we are specifing the host port number here
+
+
+
+sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server}
+
+
+ docker run -d -p 5761:8761 --name ${env.APPLICATION_NAME}-dev  ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+
+
+
+Pipeline got sucess , we got the output 
+
+
+
+
+
+Container name 
+
+
+
+
+sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker run -d -p 5761:8761 --name ${env.APPLICATION_NAME}-dev  ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+
+
+/* @Library ("com.i27academy.slb@master") _
+jfrogPipeline(
+    appName: 'eureka'
+) */
+//This jenkins file is for eureka deploy
+pipeline{
+    agent{
+        label 'k8s-slave'
+    }
+    options { 
+      // Discard old builds
+      
+      buildDiscarder(logRotator(daysToKeepStr: '7', numToKeepStr: '5'))
+      
+      }
+    environment{
+        DOCKERHUB = "docker.io/vinaykumarveeraboina"
+        APPLICATION_NAME = 'eureka'
+        POM_VERSION  = readMavenPom().getVersion()
+        POM_PACKAGING = readMavenPom().getPackaging()
+        DOCKER_CREDS = credentials('DokcerHub')
+        SONAR_URL = 'http://34.122.118.251:9000'
+        
+        SONAR_TOKEN = credentials('sonar-secret')
+    }
+    tools{
+        maven 'maven-3.8.8'
+        jdk  'Jdk17'
+    }
+  stages {
+    //application build happens here
+    stage ('Build')
+     {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " building the ${env.APPLICATION_NAME} application"
+        sh "mvn clean package -D skipTests=true"
+
+       }
+      } 
+    stage ('Unit-Test')
+    {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " Tesitng the ${env.APPLICATION_NAME} application"
+        sh "mvn test"
+        }
+        post{
+          always{
+            junit 'target/surefire-reports/*.xml'
+          }
+        }
+    }
+     stage ('Sonar _Test')
+      {
+      
+          steps {
+              echo " *************************      STARTING SONAR ANALYSIS with Quality gate     ************************ "
+              withSonarQubeEnv('SonarQube') 
+              {
+                sh """
+                mvn clean verify sonar:sonar \
+                 -Dsonar.projectKey=i127-eureka \
+                 -Dsonar.host.url=${env.SONAR_URL} \
+                 -Dsonar.login=${SONAR_TOKEN}
+                """
+              }
+          
+          
+              timeout(time: 5, unit: 'MINUTES') {
+                waitForQualityGate abortPipeline: true
+              }
+     }
+      }
+    stage ('Docker-Format')
+     {
+      steps{
+
+        //  how to read the pom.xml 
+        echo "ACTUAL_FORMAT : ${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING}"
+
+        //need to have below formating way 
+        //eureka-buildnumber-branchname.packaging
+        echo "CUSTOM_FORMAT : ${APPLICATION_NAME}-${currentBuild.number}-${BRANCH_NAME}.${POM_PACKAGING}"
+      }
+     } 
+    stage ('Docker Build and Push ')
+    {
+      steps{
+        sh """
+            ls -la
+            
+             cp ${workspace}/target/i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} ./.cicd
+             ls -la ./.cicd
+             echo "***********************  Building Docker Image  *********************************"
+             
+             
+            docker build --force-rm --no-cache --pull --rm=true --build-arg JAR_SOURCE=i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} -t ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT} ./.cicd 
+             docker images 
+             echo " *****************   Docker login ************************ "
+              docker login -u ${DOCKER_CREDS_USR} -p ${DOCKER_CREDS_PSW}
+             echo " ********************* Docker push ************************************* "
+              docker push ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+        """
+        // /home/ansible/jenkins/workspace/i27-eureka_master/target/i27-eureka-0.0.1-SNAPSHOT.jar
+      }
+    }
+    stage ("Docker deploy")
+    {
+     steps{
+        echo "************************  Deplpoying to Docker Dev  ********************************"
+
+        withCredentials([usernamePassword(credentialsId: 'DockerHost', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]){
+        
+         
+        // some block
+         //with the help of this block the slave will be connecting the docker vm ,and execute the command to create the containers
+         // sshpass -p -v ssh-o StrictHostKeyChecking=no username@ipaddess command 
+            // sh "sshpass -p ${PASSWORD}-v ssh-o StrictHostKeyChecking=no ${USERNAME}@${docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT} "
+          
+          //pulling the contaienr 
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          
+           """
+           //runnng the container 
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker run -d -p 5761:8761 --name ${env.APPLICATION_NAME}-dev  ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+        }
+     }
+    }
+  
+  
+  } 
+  } 
+ 
+
+
+
+
+
+
+Now developer did few changes to the code 
+
+
+If try to build the container with same name, it wont take it , 
+
+as the container eureka-dev is already running 
+
+Issue is with container name 
+
+Now we should do first 
+
+stop the contianer , remove the container ,  run the container 
+
+
+
+Sucessfully ran fine and now new conatienr is built 
+
+
+
+
+
+
+ echo " ******************   PULLING the container from docker hub ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          
+           """
+
+           echo " ******************   stopping  the container     ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker stop ${env.APPLICATION_NAME}-dev
+          
+           """
+           echo " ******************   removing  the container  ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker remove  ${env.APPLICATION_NAME}-dev
+          
+           """
+
+            echo " ****************  runnng the container ***************** "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker run -d -p 5761:8761 --name ${env.APPLICATION_NAME}-dev  ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+
+
+
+
+
+
+
+/* @Library ("com.i27academy.slb@master") _
+jfrogPipeline(
+    appName: 'eureka'
+) */
+//This jenkins file is for eureka deploy
+pipeline{
+    agent{
+        label 'k8s-slave'
+    }
+    options { 
+      // Discard old builds
+      
+      buildDiscarder(logRotator(daysToKeepStr: '7', numToKeepStr: '5'))
+      
+      }
+    environment{
+        DOCKERHUB = "docker.io/vinaykumarveeraboina"
+        APPLICATION_NAME = 'eureka'
+        POM_VERSION  = readMavenPom().getVersion()
+        POM_PACKAGING = readMavenPom().getPackaging()
+        DOCKER_CREDS = credentials('DokcerHub')
+        SONAR_URL = 'http://34.122.118.251:9000'
+        
+        SONAR_TOKEN = credentials('sonar-secret')
+    }
+    tools{
+        maven 'maven-3.8.8'
+        jdk  'Jdk17'
+    }
+  stages {
+    //application build happens here
+    stage ('Build')
+     {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " building the ${env.APPLICATION_NAME} application"
+        sh "mvn clean package -D skipTests=true"
+
+       }
+      } 
+    stage ('Unit-Test')
+    {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " Tesitng the ${env.APPLICATION_NAME} application"
+        sh "mvn test"
+        }
+        post{
+          always{
+            junit 'target/surefire-reports/*.xml'
+          }
+        }
+    }
+     stage ('Sonar _Test')
+      {
+      
+          steps {
+              echo " *************************      STARTING SONAR ANALYSIS with Quality gate     ************************ "
+              withSonarQubeEnv('SonarQube') 
+              {
+                sh """
+                mvn clean verify sonar:sonar \
+                 -Dsonar.projectKey=i127-eureka \
+                 -Dsonar.host.url=${env.SONAR_URL} \
+                 -Dsonar.login=${SONAR_TOKEN}
+                """
+              }
+          
+          
+              timeout(time: 5, unit: 'MINUTES') {
+                waitForQualityGate abortPipeline: true
+              }
+     }
+      }
+    stage ('Docker-Format')
+     {
+      steps{
+
+        //  how to read the pom.xml 
+        echo "ACTUAL_FORMAT : ${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING}"
+
+        //need to have below formating way 
+        //eureka-buildnumber-branchname.packaging
+        echo "CUSTOM_FORMAT : ${APPLICATION_NAME}-${currentBuild.number}-${BRANCH_NAME}.${POM_PACKAGING}"
+      }
+     } 
+    stage ('Docker Build and Push ')
+    {
+      steps{
+        sh """
+            ls -la
+            
+             cp ${workspace}/target/i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} ./.cicd
+             ls -la ./.cicd
+             echo "***********************  Building Docker Image  *********************************"
+             
+             
+            docker build --force-rm --no-cache --pull --rm=true --build-arg JAR_SOURCE=i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} -t ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT} ./.cicd 
+             docker images 
+             echo " *****************   Docker login ************************ "
+              docker login -u ${DOCKER_CREDS_USR} -p ${DOCKER_CREDS_PSW}
+             echo " ********************* Docker push ************************************* "
+              docker push ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+        """
+        // /home/ansible/jenkins/workspace/i27-eureka_master/target/i27-eureka-0.0.1-SNAPSHOT.jar
+      }
+    }
+    stage ("Docker deploy")
+    {
+     steps{
+        echo "************************  Deplpoying to Docker Dev  ********************************"
+
+        withCredentials([usernamePassword(credentialsId: 'DockerHost', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]){
+        
+         
+        // some block
+         //with the help of this block the slave will be connecting the docker vm ,and execute the command to create the containers
+         // sshpass -p -v ssh-o StrictHostKeyChecking=no username@ipaddess command 
+            // sh "sshpass -p ${PASSWORD}-v ssh-o StrictHostKeyChecking=no ${USERNAME}@${docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT} "
+          
+          //pulling the contaienr 
+            echo " ******************   PULLING the container from docker hub ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          
+           """
+
+           echo " ******************   stopping  the container     ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker stop ${env.APPLICATION_NAME}-dev
+          
+           """
+           echo " ******************   removing  the container  ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker rm  ${env.APPLICATION_NAME}-dev
+          
+           """
+
+            echo " ****************  runnng the container ***************** "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker run -d -p 5761:8761 --name ${env.APPLICATION_NAME}-dev  ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+        }
+     }
+    }
+  
+  
+  } 
+  } 
+ 
+
+
+
+
+
+Case2 :
+
+Suppose we dont have any running cintianer , still we are using stop and rm directly pipeline failed
+
+As we dont have any continer running 
+
+
+
+
+
+
+We can add try catch block under script block 
+
+Script{
+Try {
+
+Stop 
+Remove}
+
+Catch(err)
+{
+Echo "caught the error $err "}
+}
+
+
+
+It will try the stop and rm , if the task fails(no container running )  it will catch the output in a varibale called err and  
+
+we are using echo to print that error And then proceed with next step Run the container 
+
+
+Script{
+try{
+           echo " ******************   stopping  the container     ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker stop ${env.APPLICATION_NAME}-dev
+          
+           """
+           echo " ******************   removing  the container  ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker rm  ${env.APPLICATION_NAME}-dev
+          
+           """
+          }
+          catch(err)
+          {
+            echo " Error is ${err}"
+          }
+
+}
+
+ 
+
+
+
+It tried to delete the container , but the container is not present ont eh node 
+
+Try got failed and went to new step 
+
+Creating a continer
+
+
+
+
+
+Pipeline got success now 
+
+
+
+
+/* @Library ("com.i27academy.slb@master") _
+jfrogPipeline(
+    appName: 'eureka'
+) */
+//This jenkins file is for eureka deploy
+pipeline{
+    agent{
+        label 'k8s-slave'
+    }
+    options { 
+      // Discard old builds
+      
+      buildDiscarder(logRotator(daysToKeepStr: '7', numToKeepStr: '5'))
+      
+      }
+    environment{
+        DOCKERHUB = "docker.io/vinaykumarveeraboina"
+        APPLICATION_NAME = 'eureka'
+        POM_VERSION  = readMavenPom().getVersion()
+        POM_PACKAGING = readMavenPom().getPackaging()
+        DOCKER_CREDS = credentials('DokcerHub')
+        SONAR_URL = 'http://34.122.118.251:9000'
+        
+        SONAR_TOKEN = credentials('sonar-secret')
+    }
+    tools{
+        maven 'maven-3.8.8'
+        jdk  'Jdk17'
+    }
+  stages {
+    //application build happens here
+    stage ('Build')
+     {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " building the ${env.APPLICATION_NAME} application"
+        sh "mvn clean package -D skipTests=true"
+
+       }
+      } 
+    stage ('Unit-Test')
+    {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " Tesitng the ${env.APPLICATION_NAME} application"
+        sh "mvn test"
+        }
+        post{
+          always{
+            junit 'target/surefire-reports/*.xml'
+          }
+        }
+    }
+     stage ('Sonar _Test')
+      {
+      
+          steps {
+              echo " *************************      STARTING SONAR ANALYSIS with Quality gate     ************************ "
+              withSonarQubeEnv('SonarQube') 
+              {
+                sh """
+                mvn clean verify sonar:sonar \
+                 -Dsonar.projectKey=i127-eureka \
+                 -Dsonar.host.url=${env.SONAR_URL} \
+                 -Dsonar.login=${SONAR_TOKEN}
+                """
+              }
+          
+          
+              timeout(time: 5, unit: 'MINUTES') {
+                waitForQualityGate abortPipeline: true
+              }
+     }
+      }
+    stage ('Docker-Format')
+     {
+      steps{
+
+        //  how to read the pom.xml 
+        echo "ACTUAL_FORMAT : ${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING}"
+
+        //need to have below formating way 
+        //eureka-buildnumber-branchname.packaging
+        echo "CUSTOM_FORMAT : ${APPLICATION_NAME}-${currentBuild.number}-${BRANCH_NAME}.${POM_PACKAGING}"
+      }
+     } 
+    stage ('Docker Build and Push ')
+    {
+      steps{
+        sh """
+            ls -la
+            
+             cp ${workspace}/target/i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} ./.cicd
+             ls -la ./.cicd
+             echo "***********************  Building Docker Image  *********************************"
+             
+             
+            docker build --force-rm --no-cache --pull --rm=true --build-arg JAR_SOURCE=i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} -t ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT} ./.cicd 
+             docker images 
+             echo " *****************   Docker login ************************ "
+              docker login -u ${DOCKER_CREDS_USR} -p ${DOCKER_CREDS_PSW}
+             echo " ********************* Docker push ************************************* "
+              docker push ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+        """
+        // /home/ansible/jenkins/workspace/i27-eureka_master/target/i27-eureka-0.0.1-SNAPSHOT.jar
+      }
+    }
+    stage ("Docker deploy")
+    {
+     steps{
+        echo "************************  Deplpoying to Docker Dev  ********************************"
+
+        withCredentials([usernamePassword(credentialsId: 'DockerHost', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]){
+        
+         
+        // some block
+         //with the help of this block the slave will be connecting the docker vm ,and execute the command to create the containers
+         // sshpass -p -v ssh-o StrictHostKeyChecking=no username@ipaddess command 
+            // sh "sshpass -p ${PASSWORD}-v ssh-o StrictHostKeyChecking=no ${USERNAME}@${docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT} "
+          
+          //pulling the contaienr 
+            echo " ******************   PULLING the container from docker hub ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          
+           """
+          script{
+          try {
+           echo " ******************   stopping  the container     ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker stop ${env.APPLICATION_NAME}-dev
+          
+           """
+           echo " ******************   removing  the container  ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker rm  ${env.APPLICATION_NAME}-dev
+          
+           """
+          }
+          catch(err)
+          {
+            echo " caught the Error is ${err}"
+          }
+          }
+            echo " ****************  runnng the container ***************** "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker run -d -p 5761:8761 --name ${env.APPLICATION_NAME}-dev  ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+        }
+     }
+    }
+  
+  
+  } 
+  }
+  
+ 
+
+
+
+NOW container is there , testing it again 
+
+To test the try catch working 
+
+
+
+
+
+deploy the new container 
+
+
+
+Try catch ran fine and created a new contaioner 
+
+
+
+Created the new container ( old got stopped/removed) and created 
+
+
+
+ 
+
+
+
+
+
+Deploying to TEST env 
+
+
+We have just modified the container name(--name ) while running the container  here and port  ,<----<,as we are deploying on the samehost
+
+
+
+
+If deploying on the different host , 
+
+we can use diff docker hostname in sshpass command{env.docker_dev_server} which we defined  in the jenkins --system--env params
+
+
+
+
+  echo " ******************   PULLING the container from docker hub ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          
+           """
+
+
+
+
+
+Dev and tst Container are running on 2 different ports 
+
+
+
+
+
+
+
+
+
+
+
+stage ("Docker deploy to TEST env ")
+    {
+     steps{
+        echo "************************  Deplpoying to Docker TEST  ********************************"
+
+        withCredentials([usernamePassword(credentialsId: 'DockerHost', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]){
+        
+         
+      
+            echo " ******************   PULLING the container from docker hub ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          
+           """
+          script{
+          try {
+           echo " ******************   stopping  the container     ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker stop ${env.APPLICATION_NAME}-test
+          
+           """
+           echo " ******************   removing  the container  ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker rm  ${env.APPLICATION_NAME}-test
+          
+           """
+          }
+          catch(err)
+          {
+            echo " caught the Error is ${err}"
+          }
+          }
+            echo " ****************  runnng the container ***************** "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker run -d -p 6761:8761 --name ${env.APPLICATION_NAME}-test  ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+        }
+     }
+    }
+  
+  } 
+  }
+  
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//This jenkins file is for eureka deploy
+pipeline{
+    agent{
+        label 'k8s-slave'
+    }
+    options { 
+      // Discard old builds
+      
+      buildDiscarder(logRotator(daysToKeepStr: '7', numToKeepStr: '5'))
+      
+      }
+    environment{
+        DOCKERHUB = "docker.io/vinaykumarveeraboina"
+        APPLICATION_NAME = 'eureka'
+        POM_VERSION  = readMavenPom().getVersion()
+        POM_PACKAGING = readMavenPom().getPackaging()
+        DOCKER_CREDS = credentials('DokcerHub')
+        SONAR_URL = 'http://34.122.118.251:9000'
+        
+        SONAR_TOKEN = credentials('sonar-secret')
+    }
+    tools{
+        maven 'maven-3.8.8'
+        jdk  'Jdk17'
+    }
+  stages {
+    //application build happens here
+    stage ('Build')
+     {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " building the ${env.APPLICATION_NAME} application"
+        sh "mvn clean package -D skipTests=true"
+
+       }
+      } 
+    stage ('Unit-Test')
+    {
+      steps{
+         // if env varible which we are calling is built in jenkins variable , no need to write env.varbilename , we can call it directly 
+        echo " Tesitng the ${env.APPLICATION_NAME} application"
+        sh "mvn test"
+        }
+        post{
+          always{
+            junit 'target/surefire-reports/*.xml'
+          }
+        }
+    }
+     stage ('Sonar _Test')
+      {
+      
+          steps {
+              echo " *************************      STARTING SONAR ANALYSIS with Quality gate     ************************ "
+              withSonarQubeEnv('SonarQube') 
+              {
+                sh """
+                mvn clean verify sonar:sonar \
+                 -Dsonar.projectKey=i127-eureka \
+                 -Dsonar.host.url=${env.SONAR_URL} \
+                 -Dsonar.login=${SONAR_TOKEN}
+                """
+              }
+          
+          
+              timeout(time: 5, unit: 'MINUTES') {
+                waitForQualityGate abortPipeline: true
+              }
+     }
+      }
+    stage ('Docker-Format')
+     {
+      steps{
+
+        //  how to read the pom.xml 
+        echo "ACTUAL_FORMAT : ${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING}"
+
+        //need to have below formating way 
+        //eureka-buildnumber-branchname.packaging
+        echo "CUSTOM_FORMAT : ${APPLICATION_NAME}-${currentBuild.number}-${BRANCH_NAME}.${POM_PACKAGING}"
+      }
+     } 
+    stage ('Docker Build and Push ')
+    {
+      steps{
+        sh """
+            ls -la
+            
+             cp ${workspace}/target/i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} ./.cicd
+             ls -la ./.cicd
+             echo "***********************  Building Docker Image  *********************************"
+             
+             
+            docker build --force-rm --no-cache --pull --rm=true --build-arg JAR_SOURCE=i27-${APPLICATION_NAME}-${POM_VERSION}.${POM_PACKAGING} -t ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT} ./.cicd 
+             docker images 
+             echo " *****************   Docker login ************************ "
+              docker login -u ${DOCKER_CREDS_USR} -p ${DOCKER_CREDS_PSW}
+             echo " ********************* Docker push ************************************* "
+              docker push ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+        """
+        // /home/ansible/jenkins/workspace/i27-eureka_master/target/i27-eureka-0.0.1-SNAPSHOT.jar
+      }
+    }
+    stage ("Docker deploy to DEV ")
+    {
+     steps{
+        echo "************************  Deplpoying to Docker Dev  ********************************"
+
+        withCredentials([usernamePassword(credentialsId: 'DockerHost', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]){
+        
+         
+        // some block
+         //with the help of this block the slave will be connecting the docker vm ,and execute the command to create the containers
+         // sshpass -p -v ssh-o StrictHostKeyChecking=no username@ipaddess command 
+            // sh "sshpass -p ${PASSWORD}-v ssh-o StrictHostKeyChecking=no ${USERNAME}@${docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT} "
+          
+          //pulling the contaienr 
+            echo " ******************   PULLING the container from docker hub ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          
+           """
+          script{
+          try {
+           echo " ******************   stopping  the container     ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker stop ${env.APPLICATION_NAME}-dev
+          
+           """
+           echo " ******************   removing  the container  ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker rm  ${env.APPLICATION_NAME}-dev
+          
+           """
+          }
+          catch(err)
+          {
+            echo " caught the Error is ${err}"
+          }
+          }
+            echo " ****************  runnng the container ***************** "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker run -d -p 5761:8761 --name ${env.APPLICATION_NAME}-dev  ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+        }
+     }
+    }
+  
+  stage ("Docker deploy to TEST env ")
+    {
+     steps{
+        echo "************************  Deplpoying to Docker TEST  ********************************"
+
+        withCredentials([usernamePassword(credentialsId: 'DockerHost', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]){
+        
+         
+      
+            echo " ******************   PULLING the container from docker hub ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          
+           """
+          script{
+          try {
+           echo " ******************   stopping  the container     ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker stop ${env.APPLICATION_NAME}-test
+          
+           """
+           echo " ******************   removing  the container  ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker rm  ${env.APPLICATION_NAME}-test
+          
+           """
+          }
+          catch(err)
+          {
+            echo " caught the Error is ${err}"
+          }
+          }
+            echo " ****************  runnng the container ***************** "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker run -d -p 6761:8761 --name ${env.APPLICATION_NAME}-test  ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+        }
+     }
+    }
+  
+  } 
+  }
+  
+ 
+
+
+
+
+
+
+
+Case:3
+
+
+If 100 env , we should not be doing or writing the same code 100 times 
+
+
+
+So it should be dynamic 
+
+
+
+
+We are defing the method 
+
+
+When we call the function , we are passing the value ex:dev 
+
+Then then value will be passed into function while we are calling 
+
+And it will be sued further in that block , where ever we use that (envdeploy)
+
+
+
+If method , no need to pass use {}for variables
+
+
+
+
+def DockerDeploy(envdeploy,hostport,contport){
+  echo "************************  Deplpoying to Docker $envdeploy  ********************************"
+
+        withCredentials([usernamePassword(credentialsId: 'DockerHost', passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]){
+        
+         
+      
+            echo " ******************   PULLING the container from docker hub ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker pull ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          
+           """
+          script{
+          try {
+           echo " ******************   stopping  the container     ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker stop ${env.APPLICATION_NAME}-t$envdeployest
+          
+           """
+           echo " ******************   removing  the container  ********************  "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker rm  ${env.APPLICATION_NAME}-$envdeploy
+          
+           """
+          }
+          catch(err)
+          {
+            echo " caught the Error is ${err}"
+          }
+          }
+            echo " ****************  runnng the container ***************** "
+           sh """
+           sshpass -p ${env.PASSWORD} ssh -o StrictHostKeyChecking=no ${env.USERNAME}@${env.docker_dev_server} docker run -d -p $hostport:$contport --name ${env.APPLICATION_NAME}-$envdeploy  ${env.DOCKERHUB}/${env.APPLICATION_NAME}:${GIT_COMMIT}
+          """
+        }
+}
+
+
+Calling it in the jenkins block
+
+stage ("Docker deploy to STAGE env ")
+    {
+     steps{
+        
+        script{
+        DockerDeploy('stage','7761','8761').call()
+        }
+     }
+     } 
+
+
+
+
